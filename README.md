@@ -17,11 +17,15 @@ Loads the committed `model.joblib`; no refitting.
 ## Reproduce training
 
 ```
-python train_model.py --en <english_dir> --hi <hindi_dir>
+python ship_blend_v2.py
 ```
 
-Runs 5-fold GroupKFold (by turn) out-of-fold evaluation with the official
-scorer, then refits on everything and rewrites `model.joblib`.
+Runs nested GroupKFold OOF for the isotonic-ExtraTrees + LogReg blend
+(official `starter/score.py`), and rewrites `model.joblib` only if mean
+OOF delay beats the previous gate. `blend_model.py` must sit next to
+`predict.py` (joblib unpickle).
+
+Older baseline trainer: `python train_model.py --en <english_dir> --hi <hindi_dir>`
 
 ## Causality
 
