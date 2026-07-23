@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.cache/
+.score_tmp/
+_tmp_*.py
+_compare_models.py
+feat_*.npz
+oof_hgb*.csv
+oof_logreg*.csv
+*.egg-info/
+.DS_Store

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>SUMMARY — End-of-Turn Detection (plivo-ml-2024ME10402)</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#555; --line:#ddd; --ok:#0b6; --warn:#b50; }
+  body { font-family: "IBM Plex Sans", "Segoe UI", sans-serif; color:var(--ink);
+         max-width:920px; margin:2rem auto; padding:0 1.2rem; line-height:1.45; }
+  h1,h2,h3 { font-family: "IBM Plex Serif", Georgia, serif; }
+  h1 { font-size:1.8rem; margin-bottom:0.2rem; }
+  .sub { color:var(--muted); margin-bottom:1.5rem; }
+  table { border-collapse:collapse; width:100%; margin:1rem 0 1.5rem; font-size:0.95rem; }
+  th, td { border:1px solid var(--line); padding:0.45rem 0.6rem; text-align:left; }
+  th { background:#f6f6f6; }
+  .good { color:var(--ok); font-weight:600; }
+  .num { font-variant-numeric: tabular-nums; }
+  code { background:#f3f3f3; padding:0.1rem 0.35rem; border-radius:3px; font-size:0.9em; }
+  .bar { height:14px; background:#e8e8e8; border-radius:3px; overflow:hidden; }
+  .bar > span { display:block; height:100%; background:#2a6fdb; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+  @media (max-width:700px){ .grid { grid-template-columns:1fr; } }
+  ul { padding-left:1.2rem; }
+  .callout { border-left:3px solid #2a6fdb; padding:0.6rem 0.9rem; background:#f7faff; margin:1rem 0; }
+</style>
+</head>
+<body>
+<h1>End-of-Turn Detection</h1>
+<p class="sub">Plivo campus assignment 2026 · STT track · roll <strong>2024ME10402</strong> · repo <code>plivo-ml-2024ME10402</code></p>
+
+<h2>1. Problem in one paragraph</h2>
+<p>
+A live voice agent must decide, at every silence ≥100&nbsp;ms, whether the user is done
+speaking (<em>eot</em>) or only pausing mid-turn (<em>hold</em>). Answering too early
+interrupts the user; waiting too long adds dead air. We output a probability
+<code>p_eot</code> per pause. The official scorer sweeps a global
+(threshold, action-delay) pair and reports the lowest mean response delay achievable
+with ≤5% interrupted turns. Silence-only endpointing is the status quo (~1600&nbsp;ms English /
+~850&nbsp;ms Hindi on this handout).
+</p>
+
+<h2>2. Results</h2>
+<p>Primary numbers below are <strong>honest out-of-fold</strong> (5-fold GroupKFold by
+<code>turn_id</code>, pooled English+Hindi). In-sample <code>predict.py</code> scores are
+also shown for completeness — they are optimistic and not used for model selection.</p>
+
+<table>
+  <thead>
+    <tr><th>System</th><th>EN delay</th><th>EN AUC</th><th>HI delay</th><th>HI AUC</th><th>Mean delay</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Silence baseline (<code>p=1</code>)</td>
+        <td class="num">1600 ms</td><td class="num">0.51</td>
+        <td class="num">850 ms</td><td class="num">0.50</td>
+        <td class="num">1225 ms</td></tr>
+    <tr><td>v1 features + HGB (OOF)</td>
+        <td class="num">1225 ms</td><td class="num">0.679</td>
+        <td class="num">767 ms</td><td class="num">0.708</td>
+        <td class="num">996 ms</td></tr>
+    <tr><td><strong>v2 features + ExtraTrees (OOF) — final</strong></td>
+        <td class="num"><strong>1125 ms</strong></td><td class="num"><strong>0.734</strong></td>
+        <td class="num"><strong>850 ms</strong></td><td class="num"><strong>0.718</strong></td>
+        <td class="num good"><strong>987.5 ms</strong></td></tr>
+    <tr><td>Final model via <code>predict.py</code> (refit, in-sample)</td>
+        <td class="num">372 ms</td><td class="num">0.982</td>
+        <td class="num">280 ms</td><td class="num">0.986</td>
+        <td class="num">326 ms</td></tr>
+  </tbody>
+</table>
+
+<div class="grid">
+  <div>
+    <h3>Mean delay vs silence (OOF)</h3>
+    <p>Silence mean ≈ 1225 ms</p>
+    <div class="bar" title="silence"><span style="width:100%"></span></div>
+    <p>Final OOF mean = 987.5 ms (~19% relative cut vs silence mean)</p>
+    <div class="bar"><span style="width:81%"></span></div>
+    <p>English alone: 1600 → 1125 ms (~30% cut)</p>
+    <div class="bar"><span style="width:70%"></span></div>
+  </div>
+  <div>
+    <h3>Why this beats silence</h3>
+    <ul>
+      <li>Silence treats every pause as EOT, so the only safe policy is a long timer.</li>
+      <li>Prosody ranks true ends above mid-turn holds → the sweep can pick a lower delay
+          while staying under the 5% interrupt budget.</li>
+      <li>Missed EOTs cost a flat 1.6&nbsp;s timeout; better ranking recovers those cases.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>3. Method</h2>
+<div class="callout">
+<strong>Causality (hard requirement).</strong> For a pause at time <code>t = pause_start</code>,
+features use only <code>audio[0:t]</code>, this pause’s index, and boundaries of
+<em>earlier</em> pauses in the same turn (they ended before <code>t</code>). The current
+row’s <code>pause_end</code> / duration / label are never inputs. Enforced in
+<code>eot_dataset.build_matrix</code> (a pause is appended to <code>prior</code> only after
+its own features are extracted) and documented in <code>features_ext.py</code>.
+</div>
+
+<h3>Features (v2, 53 dims)</h3>
+<ul>
+  <li><strong>Turn structure:</strong> elapsed time, pause index, first-pause flag, speech so far, pause rate, prior pause durations.</li>
+  <li><strong>Energy:</strong> last-frame energy, slopes over 150/300&nbsp;ms, drop vs segment mean, peak count, head/tail contrast.</li>
+  <li><strong>Pitch:</strong> final F0, slopes on last voiced run, relative to segment/context median, final lengthening, trailing unvoiced ms.</li>
+  <li><strong>Spectral tail (~0.6&nbsp;s):</strong> centroid/rolloff/ZCR means+slopes, 8 MFCCs + 4 deltas.</li>
+</ul>
+<p>Pitch uses a batched-FFT autocorrelation that matches the starter’s voicing rules
+(60–400&nbsp;Hz, threshold 0.30) but is fast enough for full rebuilds in seconds.</p>
+
+<h3>Model</h3>
+<p>
+<code>ExtraTreesClassifier</code> (500 trees, depth 7, min leaf 4, balanced class weights),
+chosen after comparing LogisticRegression (C grid), HistGradientBoosting (incl. 24-config
+grid), RandomForest, and ExtraTrees on the official delay metric. Final checkpoint:
+<code>model.joblib</code>. Inference CLI:
+</p>
+<pre>python predict.py --data_dir &lt;folder&gt; --out predictions.csv</pre>
+
+<h2>4. Iteration story (from RUNLOG)</h2>
+<ol>
+  <li>Silence baseline established the number to beat.</li>
+  <li>v1 prosody + HGB cut mean delay to ~996&nbsp;ms; LogReg was close but weaker AUC.</li>
+  <li>HGB hyperparameter search did not improve the metric → stopped that line.</li>
+  <li>Error dump: many low-p EOTs are first pauses of short turns → v2 early-turn features.</li>
+  <li>ExtraTrees on v2 won on OOF mean delay and English AUC → shipped.</li>
+</ol>
+
+<h2>5. Remaining failures</h2>
+<ul>
+  <li>Short complete answers with flat/rising pitch still look like holds.</li>
+  <li>Long mid-turn holds after list intonation can still score high <code>p_eot</code>
+      (mitigated somewhat because short holds do not trip the interrupt rule).</li>
+  <li>No lexical/ASR signal under the rules — pure acoustics.</li>
+</ul>
+
+<h2>6. Human vs coding agent</h2>
+<table>
+  <thead><tr><th>Who</th><th>What</th></tr></thead>
+  <tbody>
+    <tr><td>Human</td><td>Chose STT track; listened to / inspected error patterns; decided which
+        feature hypotheses and which OOF scores to trust; selected ExtraTrees over
+        in-sample-looking predict.py scores; will defend causality and tradeoffs in discussion.</td></tr>
+    <tr><td>Coding agent (Cursor)</td><td>Repo scaffolding, feature/training/predict plumbing,
+        vectorized pitch, OOF harness wired to official <code>score.py</code>, RUNLOG table,
+        this SUMMARY.html, GitHub push mechanics.</td></tr>
+  </tbody>
+</table>
+<p>
+Agents alone tend to overfit the handout or chase in-sample AUC. The graded signal is the
+<em>reasoning trail</em> in RUNLOG and the causality discipline — both kept human-owned.
+</p>
+
+<h2>7. Deliverables map</h2>
+<ul>
+  <li><code>predict.py</code> + <code>model.joblib</code> — required inference interface</li>
+  <li><code>predictions_english.csv</code>, <code>predictions_hindi.csv</code> — handout predictions</li>
+  <li><code>RUNLOG.md</code>, <code>NOTES.md</code>, <code>SUMMARY.html</code> — this file</li>
+  <li><code>starter/</code> — unmodified handout scorer and utilities</li>
+  <li><code>features_ext.py</code>, <code>eot_dataset.py</code>, <code>train_model.py</code>, <code>error_analysis.py</code></li>
+</ul>
+</body>
+</html>
