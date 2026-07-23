@@ -31,13 +31,24 @@ def main():
     args = ap.parse_args()
 
     bundle = joblib.load(os.path.join(ROOT, "model.joblib"))
-    if bundle["feature_version"] != FEATURE_VERSION:
+    # Allow model.feature_version <= code FEATURE_VERSION when the bundle
+    # lists an explicit feature_names subset (e.g. v2 model, v4 code).
+    if bundle["feature_version"] > FEATURE_VERSION:
         raise SystemExit(
             f"model.joblib was built with feature v{bundle['feature_version']}"
-            f" but code is v{FEATURE_VERSION}; retrain with train_model.py")
+            f" but code is v{FEATURE_VERSION}; retrain or update features_ext.py")
+    if bundle["feature_version"] != FEATURE_VERSION:
+        print(f"note: model feature v{bundle['feature_version']} vs code "
+              f"v{FEATURE_VERSION}; subsetting by bundle feature_names")
 
     X, _, keys, _ = build_matrix(args.data_dir, cache_dir=None,
                                  use_cache=False)
+    names = bundle.get("feature_names")
+    if names is not None:
+        from features_ext import FEATURE_NAMES as CODE_NAMES
+        if list(names) != list(CODE_NAMES):
+            idx = [CODE_NAMES.index(n) for n in names]
+            X = X[:, idx]
     p = bundle["model"].predict_proba(X)[:, 1]
     p = np.clip(np.nan_to_num(p, nan=0.4), 0.0, 1.0)
 

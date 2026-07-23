@@ -17,15 +17,15 @@ Loads the committed `model.joblib`; no refitting.
 ## Reproduce training
 
 ```
-python ship_blend_v2.py
+python ship_lit_threeway.py
 ```
 
-Runs nested GroupKFold OOF for the isotonic-ExtraTrees + LogReg blend
-(official `starter/score.py`), and rewrites `model.joblib` only if mean
-OOF delay beats the previous gate. `blend_model.py` must sit next to
-`predict.py` (joblib unpickle).
+Rebuilds v4 features (if needed), runs nested GroupKFold OOF for the
+0.30/0.20/0.50 iso-ET + LR + iso-HGB blend, and rewrites `model.joblib`
+only if mean OOF delay beats the gate. Requires `blend_model.py` next to
+`predict.py`.
 
-Older baseline trainer: `python train_model.py --en <english_dir> --hi <hindi_dir>`
+Older recipes: `ship_blend_v2.py` (2-way), `ship_threeway_v2.py` (v2 3-way).
 
 ## Causality
 

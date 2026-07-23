@@ -30,7 +30,7 @@ SEG_S = 1.5   # analysis window immediately before the pause
 CTX_S = 4.0   # longer context for speaker-relative normalisation
 TAIL_S = 0.6  # spectral/MFCC window at the very end of speech
 
-FEATURE_VERSION = 2  # bump to invalidate cached feature matrices
+FEATURE_VERSION = 4  # literature cues: flux, jitter/shimmer, semitone-z
 
 FEATURE_NAMES = [
     # timing / turn structure (past metadata only)
@@ -49,7 +49,23 @@ FEATURE_NAMES = [
     # spectral shape at the end
     "cent_mean", "cent_slope", "rolloff_mean", "rolloff_slope",
     "zcr_mean", "zcr_slope", "rms_tail",
-] + [f"mfcc{i}" for i in range(8)] + [f"dmfcc{i}" for i in range(4)]
+] + [f"mfcc{i}" for i in range(8)] + [f"dmfcc{i}" for i in range(4)] + [
+    # v4 literature-derived (causal)
+    "cepstral_flux_tail",   # mean ||mfcc_t - mfcc_{t-1}|| in last ~400 ms
+    "cepstral_flux_ratio",  # tail flux / earlier-seg flux
+    "f0_jitter",            # mean |Δperiod| / mean period on last voiced run
+    "amp_shimmer",          # mean |Δrms| / mean rms on last voiced run
+    "f0_st_last",           # last F0 in semitones re: context median
+    "f0_st_z_ctx",          # (f0_st_last - mean_ctx) / std_ctx
+    "f0_st_slope",          # semitone slope on last voiced run
+]
+
+# column index groups for ablation scoring (relative to FEATURE_NAMES)
+LIT_FLUX = ["cepstral_flux_tail", "cepstral_flux_ratio"]
+LIT_JITTER = ["f0_jitter", "amp_shimmer"]
+LIT_SEMITONE = ["f0_st_last", "f0_st_z_ctx", "f0_st_slope"]
+LIT_ALL = LIT_FLUX + LIT_JITTER + LIT_SEMITONE
+V2_NAMES = [n for n in FEATURE_NAMES if n not in LIT_ALL]
 
 
 def load_wav(path):
@@ -219,6 +235,7 @@ def pause_features(x, sr, pause_start, prior_pauses):
 
     # ---- spectral shape of the final moments ----
     tail = seg[-int(TAIL_S * sr):]
+    mfcc_frames = None
     if len(tail) >= 400:
         f["rms_tail"] = float(np.sqrt(np.mean(tail ** 2) + 1e-12))
         cent = librosa.feature.spectral_centroid(
@@ -235,6 +252,7 @@ def pause_features(x, sr, pause_start, prior_pauses):
         f["zcr_slope"] = _slope(zcr, hop_s)
         m = librosa.feature.mfcc(y=tail, sr=sr, n_mfcc=8, n_fft=512,
                                  hop_length=160)
+        mfcc_frames = m
         for i in range(8):
             f[f"mfcc{i}"] = float(np.mean(m[i]))
         if m.shape[1] >= 2:
@@ -242,8 +260,111 @@ def pause_features(x, sr, pause_start, prior_pauses):
             for i in range(4):
                 f[f"dmfcc{i}"] = float(np.mean(dm[i]))
 
+    # ---- v4: cepstral flux (phoneme lengthening cue) ----
+    # Use MFCC frames over the full seg for ratio; hop 160 ~10 ms at 16 kHz
+    if len(seg) >= int(0.5 * sr):
+        m_seg = librosa.feature.mfcc(y=seg, sr=sr, n_mfcc=8, n_fft=512,
+                                     hop_length=160)
+        if m_seg.shape[1] >= 3:
+            d = np.linalg.norm(np.diff(m_seg, axis=1), axis=0)  # per-step flux
+            # last ~400 ms ≈ 40 frames at 10 ms; earlier = preceding same length
+            n_tail = min(40, len(d))
+            flux_tail = float(np.mean(d[-n_tail:]))
+            f["cepstral_flux_tail"] = flux_tail
+            if len(d) >= 2 * n_tail:
+                flux_prev = float(np.mean(d[-2 * n_tail: -n_tail]))
+                f["cepstral_flux_ratio"] = float(flux_tail / max(flux_prev, 1e-6))
+
+    # ---- v4: jitter + shimmer on last voiced run ----
+    if runs:
+        ls, le = runs[-1]
+        last_f0 = f0[ls:le]
+        # frame RMS aligned to hop of energy frames — use seg energy near end
+        if len(e) >= le and (le - ls) >= 3:
+            # map voiced-run frame indices (F0 hop=10ms) onto energy frames
+            e_run = e[max(0, ls): min(len(e), le)]
+            if len(e_run) >= 3:
+                # shimmer on linear-ish amplitude proxy: 10**(e/20)
+                amp = np.power(10.0, e_run / 20.0)
+                f["amp_shimmer"] = float(
+                    np.mean(np.abs(np.diff(amp))) / max(np.mean(amp), 1e-9))
+        voiced_f0 = last_f0[last_f0 > 0]
+        if len(voiced_f0) >= 3:
+            periods = 1.0 / voiced_f0
+            f["f0_jitter"] = float(
+                np.mean(np.abs(np.diff(periods))) / max(np.mean(periods), 1e-9))
+
+    # ---- v4: semitone pitch z-normalized by context ----
+    # ref = context median F0; convert last F0 and slope to semitones
+    if len(vc) >= 3 and runs and not np.isnan(f["f0_last"]):
+        ref = float(np.median(vc))
+        st_ctx = 12.0 * np.log2(np.maximum(vc, 1e-3) / max(ref, 1e-3))
+        st_last = 12.0 * np.log2(max(f["f0_last"], 1e-3) / max(ref, 1e-3))
+        f["f0_st_last"] = float(st_last)
+        mu, sd = float(np.mean(st_ctx)), float(np.std(st_ctx) + 1e-6)
+        f["f0_st_z_ctx"] = float((st_last - mu) / sd)
+        ls, le = runs[-1]
+        last_f0 = f0[ls:le]
+        last_f0 = last_f0[last_f0 > 0]
+        if len(last_f0) >= 3:
+            st_run = 12.0 * np.log2(np.maximum(last_f0, 1e-3) / max(ref, 1e-3))
+            f["f0_st_slope"] = _slope(st_run, hop_s)
+
     return f
+
+
+def frame_sequence(x, sr, pause_start, max_steps=60, step_ms=50):
+    """Causal frame sequence for tiny GRU: [T, 4] = energy_db, voiced,
+    semitone (re: context med), local cepstral flux. T<=max_steps (~3 s).
+    """
+    t_end = min(int(pause_start * sr), len(x))
+    win = x[max(0, t_end - int(3.0 * sr)): t_end]
+    T = max_steps
+    feats = np.zeros((T, 4), dtype=np.float32)
+    if len(win) < sr // 10:
+        return feats
+    hop = int(sr * step_ms / 1000)
+    fl = hop  # non-overlapping-ish blocks
+    # context median F0 for semitone ref
+    f0_all = f0_contour_fast(win, sr)
+    vc = f0_all[f0_all > 0]
+    ref = float(np.median(vc)) if len(vc) else 150.0
+    # mfcc over win for flux
+    try:
+        m = librosa.feature.mfcc(y=win, sr=sr, n_mfcc=8, n_fft=512,
+                                 hop_length=max(hop // 5, 1))
+        flux_full = np.zeros(m.shape[1], dtype=np.float32)
+        if m.shape[1] >= 2:
+            flux_full[1:] = np.linalg.norm(np.diff(m, axis=1), axis=0).astype(np.float32)
+    except Exception:
+        flux_full = np.zeros(1, dtype=np.float32)
+
+    n_frames = max(1, (len(win) - fl) // hop + 1)
+    rows = []
+    for i in range(n_frames):
+        s = i * hop
+        chunk = win[s: s + fl]
+        if len(chunk) < fl // 2:
+            break
+        edb = float(20 * np.log10(np.sqrt(np.mean(chunk ** 2) + 1e-12) + 1e-12))
+        # f0 near this block
+        f0i = f0_contour_fast(chunk, sr)
+        voiced = 1.0 if np.any(f0i > 0) else 0.0
+        f0m = float(np.median(f0i[f0i > 0])) if voiced else ref
+        st = float(12.0 * np.log2(max(f0m, 1e-3) / max(ref, 1e-3)))
+        # map to mfcc flux index
+        fi = min(int(i * (len(flux_full) / max(n_frames, 1))), len(flux_full) - 1)
+        rows.append([edb, voiced, st, float(flux_full[fi])])
+    if not rows:
+        return feats
+    arr = np.asarray(rows, dtype=np.float32)
+    if len(arr) >= T:
+        feats[:] = arr[-T:]
+    else:
+        feats[-len(arr):] = arr
+    return feats
 
 
 def features_vec(fdict):
     return np.array([fdict[k] for k in FEATURE_NAMES], dtype=np.float32)
+

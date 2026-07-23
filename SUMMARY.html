@@ -61,14 +61,18 @@ also shown for completeness — they are optimistic and not used for model selec
         <td class="num">1125 ms</td><td class="num">0.734</td>
         <td class="num">850 ms</td><td class="num">0.718</td>
         <td class="num">987.5 ms</td></tr>
-    <tr><td><strong>v2 iso-ET + LogReg blend (OOF) — final</strong></td>
-        <td class="num"><strong>1078 ms</strong></td><td class="num"><strong>0.716</strong></td>
-        <td class="num"><strong>850 ms</strong></td><td class="num"><strong>0.707</strong></td>
-        <td class="num good"><strong>964.0 ms</strong></td></tr>
-    <tr><td>v3 tight features + ET / blends (OOF, not shipped)</td>
-        <td class="num">≥1126 ms</td><td class="num">—</td>
-        <td class="num">850 ms</td><td class="num">—</td>
-        <td class="num">988–992 ms</td></tr>
+    <tr><td>v2 iso-ET + LogReg blend (OOF)</td>
+        <td class="num">1078 ms</td><td class="num">0.716</td>
+        <td class="num">850 ms</td><td class="num">0.707</td>
+        <td class="num">964.0 ms</td></tr>
+    <tr><td>v2 3-way iso-ET/LR/HGB (OOF)</td>
+        <td class="num">1123 ms</td><td class="num">0.719</td>
+        <td class="num">784 ms</td><td class="num">0.713</td>
+        <td class="num">953.5 ms</td></tr>
+    <tr><td><strong>v4 lit + 3-way 0.30/0.20/0.50 (OOF) — final</strong></td>
+        <td class="num"><strong>1032 ms</strong></td><td class="num"><strong>0.720</strong></td>
+        <td class="num"><strong>792 ms</strong></td><td class="num"><strong>0.715</strong></td>
+        <td class="num good"><strong>912.2 ms</strong></td></tr>
     <tr><td>Final model via <code>predict.py</code> (refit, in-sample)</td>
         <td class="num">—</td><td class="num">—</td>
         <td class="num">—</td><td class="num">—</td>
@@ -81,10 +85,10 @@ also shown for completeness — they are optimistic and not used for model selec
     <h3>Mean delay vs silence (OOF)</h3>
     <p>Silence mean ≈ 1225 ms</p>
     <div class="bar" title="silence"><span style="width:100%"></span></div>
-    <p>Final OOF mean = 964.0 ms (~21% relative cut vs silence mean)</p>
-    <div class="bar"><span style="width:79%"></span></div>
-    <p>English alone: 1600 → 1078 ms (~33% cut)</p>
-    <div class="bar"><span style="width:67%"></span></div>
+    <p>Final OOF mean = 912.2 ms (~26% relative cut vs silence mean)</p>
+    <div class="bar"><span style="width:74%"></span></div>
+    <p>English alone: 1600 → 1032 ms (~36% cut); Hindi: 850 → 792 ms</p>
+    <div class="bar"><span style="width:64%"></span></div>
   </div>
   <div>
     <h3>Why this beats silence</h3>
@@ -107,23 +111,20 @@ row’s <code>pause_end</code> / duration / label are never inputs. Enforced in
 its own features are extracted) and documented in <code>features_ext.py</code>.
 </div>
 
-<h3>Features (v2, 53 dims)</h3>
+<h3>Features (v4 = v2 + literature cues, 60 dims)</h3>
 <ul>
-  <li><strong>Turn structure:</strong> elapsed time, pause index, first-pause flag, speech so far, pause rate, prior pause durations.</li>
-  <li><strong>Energy:</strong> last-frame energy, slopes over 150/300&nbsp;ms, drop vs segment mean, peak count, head/tail contrast.</li>
-  <li><strong>Pitch:</strong> final F0, slopes on last voiced run, relative to segment/context median, final lengthening, trailing unvoiced ms.</li>
-  <li><strong>Spectral tail (~0.6&nbsp;s):</strong> centroid/rolloff/ZCR means+slopes, 8 MFCCs + 4 deltas.</li>
+  <li><strong>Turn structure / energy / pitch / spectral:</strong> same causal v2 core (53 dims).</li>
+  <li><strong>Cepstral flux:</strong> mean MFCC-frame Euclidean distance in the last ~400&nbsp;ms + ratio vs prior window (lengthening → EOT).</li>
+  <li><strong>Jitter / shimmer:</strong> period and amplitude perturbation on the last voiced run (creak / end-of-breath).</li>
+  <li><strong>Semitone-z F0:</strong> last F0 and slope in semitones relative to context-median, z-scored in the causal context window.</li>
 </ul>
-<p>Pitch uses a batched-FFT autocorrelation that matches the starter’s voicing rules
-(60–400&nbsp;Hz, threshold 0.30) but is fast enough for full rebuilds in seconds.</p>
 
 <h3>Model</h3>
 <p>
-Soft blend of <strong>isotonic-calibrated ExtraTrees</strong> (500 trees, depth 7,
-min leaf 4, balanced) at weight 0.7 and <strong>LogisticRegression</strong> (C=1,
-balanced) at weight 0.3. Calibration is fit inside GroupKFold so OOF probabilities
-never see their own labels. Chosen after ExtraTrees alone (987.5&nbsp;ms mean),
-calibration-only, and a tight features-v3 attempt (best 988&nbsp;ms — not shipped).
+Soft <strong>3-way blend</strong>: isotonic-calibrated ExtraTrees (w=0.30) +
+LogisticRegression C=1 (w=0.20) + isotonic-calibrated HistGradientBoosting (w=0.50).
+Calibration is nested inside GroupKFold. Chosen after 2-way blends (964&nbsp;ms),
+v2 3-way (953.5&nbsp;ms), pruning (942.5&nbsp;ms), MLP/GRU, and feature ablations.
 Final checkpoint: <code>model.joblib</code> (+ <code>blend_model.py</code>). Inference CLI:
 </p>
 <pre>python predict.py --data_dir &lt;folder&gt; --out predictions.csv</pre>
@@ -134,17 +135,17 @@ Final checkpoint: <code>model.joblib</code> (+ <code>blend_model.py</code>). Inf
   <li>v1 prosody + HGB cut mean delay to ~996&nbsp;ms; LogReg was close but weaker AUC.</li>
   <li>HGB hyperparameter search did not improve the metric → stopped that line.</li>
   <li>Error dump: many low-p EOTs are first pauses of short turns → v2 early-turn features.</li>
-  <li>ExtraTrees on v2 won first ship at 987.5&nbsp;ms mean.</li>
-  <li>Hindi floor diagnosis: 850&nbsp;ms is min safe delay with 100% EOT fire under 5% cutoff.</li>
-  <li>Isotonic ET + LogReg blend cut EN to 1078&nbsp;ms → mean <strong>964&nbsp;ms</strong> (shipped).</li>
-  <li>Tight v3 features (RMS ratio / HNR drop / speech burst) peaked at 988&nbsp;ms — kept off the ship.</li>
+  <li>ExtraTrees on v2 → 987.5&nbsp;ms; iso-ET+LR blend → 964&nbsp;ms.</li>
+  <li>Hindi floor diagnosis; 3-way + HGB moved HI 850→784 on v2 (953.5&nbsp;ms).</li>
+  <li>Literature v4 cues + fine 3-way (0.30/0.20/0.50) → <strong>912.2&nbsp;ms</strong> (shipped).</li>
+  <li>Prune/MLP/GRU/CNN: logged; none beat 7e before the ship window.</li>
 </ol>
 
 <h2>5. Remaining failures</h2>
 <ul>
-  <li>Hindi delay is glued at 850&nbsp;ms because a few long high-p HOLDs bind the 5% budget once every EOT already fires.</li>
+  <li>Hindi long high-p HOLDs still bind the 5% budget, but calibrated HGB in the blend lowered HI delay from 850→792&nbsp;ms.</li>
   <li>Short complete answers with flat/rising pitch still look like holds (English).</li>
-  <li>Long mid-turn holds after list intonation can still score high <code>p_eot</code>.</li>
+  <li>Jitter/shimmer alone overfit; useful only inside the blend.</li>
   <li>No lexical/ASR signal under the rules — pure acoustics.</li>
 </ul>
 
