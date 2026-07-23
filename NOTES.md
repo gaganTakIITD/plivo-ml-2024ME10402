@@ -7,6 +7,6 @@
 5. Hindi’s old 850 ms OOF delay was a **delay-floor** under the 5% cutoff (all EOTs already firing). Adding calibrated HGB into the blend was what finally moved Hindi (→ ~792 ms) by demoting long high-p HOLDs.
 6. Literature v4 cues: cepstral flux (lengthening), jitter/shimmer (creak), semitone-z F0. Ablations: flux/semitone help; jitter alone hurts; the pack wins inside the 3-way blend (mean 912.2).
 7. Tiny MLP (~963 ms) and GRU (EN AUC 0.64) did not beat the tree blend; CNN on log-mel was deferred to protect the ship window (documented in RUNLOG 7g).
-8. Feature pruning (drop 18) + 3-way reached 942.5 ms — useful but worse than lit 3-way.
-9. Hindi upweighting (1.5–3×) did not clear the gate without HI regression.
+8. Where it still fails: short complete English answers at the first pause still score low (each missed EOT costs the 1.6 s timeout), and a few long late-turn Hindi holds still rank high enough to bind the 5% interrupt budget.
+9. With one more day: listen to those missed first-pause turns and add whole-utterance finality cues (total F0 declination, normalized final lengthening), and get more labeled turns — at 100 turns/language the scorer's operating-point granularity limits how reliably further gains can be measured.
 10. Human contribution: hypothesis priority and which OOF scores to trust; coding agent ran the feature/training/predict plumbing and SUMMARY.
